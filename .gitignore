@@ -3,7 +3,7 @@
 .DS_Store
 airflow_settings.yaml
 __pycache__/
-astro
+.astro
 .venv
 .astro/standalone/
 airflow-webserver.pid
@@ -11,3 +11,4 @@ webserver_config.py
 airflow.cfg
 airflow.db
 venv
+Terraform/
