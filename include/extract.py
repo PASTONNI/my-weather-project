@@ -9,21 +9,22 @@ s3 = boto3.client('s3')
 today_date = date.today().strftime('%Y-%m-%d')
 
 
-def fetch_data():
-    response = requests.get(url)
-    data = response.json()
-    return pd.DataFrame(data=data['hourly'])
+def extract_data():
+    def fetch_data():
+        response = requests.get(url)
+        data = response.json()
+        return pd.DataFrame(data=data['hourly'])
+
+    df = fetch_data()
+
+    csv_buffer = StringIO()
+    df.to_csv(csv_buffer, index=False)
+
+    s3.put_object(
+        Bucket=bucket_name,
+        Key=f'raw/{today_date}.csv',
+        Body=csv_buffer.getvalue()
+    )
 
 
-df = fetch_data()
-
-
-csv_buffer = StringIO()
-df.to_csv(csv_buffer, index=False)
-
-s3 = boto3.client('s3')
-s3.put_object(
-    Bucket=bucket_name,
-    Key=f'raw/{today_date}.csv',
-    Body=csv_buffer.getvalue()
-)
+extract_data()
