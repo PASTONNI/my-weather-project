@@ -1,45 +1,226 @@
-Overview
-========
+# Weather Pipeline
 
-Welcome to Astronomer! This project was generated after you ran 'astro dev init' using the Astronomer CLI. This readme describes the contents of the project, as well as how to run Apache Airflow on your local machine.
+A daily ETL pipeline built with Apache Airflow that retrieves hourly weather data for Berlin from the [Open-Meteo API](https://open-meteo.com/), stores the raw data in Amazon S3, loads it into PostgreSQL, transforms it into a daily summary, and sends an email with clothing and umbrella recommendations.
 
-Project Contents
-================
+The AWS infrastructure is provisioned using Terraform.
 
-Your Astro project contains the following files and folders:
+## Architecture
 
-- dags: This folder contains the Python files for your Airflow DAGs. By default, this directory includes one example DAG:
-    - `example_astronauts`: This DAG shows a simple ETL pipeline example that queries the list of astronauts currently in space from the Open Notify API and prints a statement for each astronaut. The DAG uses the TaskFlow API to define tasks in Python, and dynamic task mapping to dynamically print a statement for each astronaut. For more on how this DAG works, see our [Getting started tutorial](https://www.astronomer.io/docs/learn/get-started-with-airflow).
-- Dockerfile: This file contains a versioned Astro Runtime Docker image that provides a differentiated Airflow experience. If you want to execute other commands or overrides at runtime, specify them here.
-- include: This folder contains any additional files that you want to include as part of your project. It is empty by default.
-- packages.txt: Install OS-level packages needed for your project by adding them to this file. It is empty by default.
-- requirements.txt: Install Python packages needed for your project by adding them to this file. It is empty by default.
-- plugins: Add custom or community plugins for your project to this file. It is empty by default.
-- airflow_settings.yaml: Use this local-only file to specify Airflow Connections, Variables, and Pools instead of entering them in the Airflow UI as you develop DAGs in this project.
+```text
+Open-Meteo API
+      │
+      ▼
+ extract_data ─────────► Amazon S3
+      │                  raw/<YYYY-MM-DD>.csv
+      ▼
+load_data_to_db ───────────────┐
+                               ├──► transform_data
+load_weather_codes ────────────┘
+                                       │
+                                       ▼
+                                   recommend
+                                       │
+                                       ▼
+                                     notify
+                                       │
+                                       ▼
+                              HTML email report
+```
 
-Deploy Your Project Locally
-===========================
+`load_data_to_db` and `load_weather_codes` run in parallel before `transform_data`.
 
-Start Airflow on your local machine by running 'astro dev start'.
+## Tech Stack
 
-This command will spin up five Docker containers on your machine, each for a different Airflow component:
+| Layer          | Tool                               |
+| -------------- | ---------------------------------- |
+| Orchestration  | Apache Airflow                     |
+| Data source    | Open-Meteo API                     |
+| Storage        | Amazon S3                          |
+| Database       | Amazon RDS PostgreSQL              |
+| Processing     | pandas and SQLAlchemy              |
+| Notifications  | Jinja2 and Airflow email utilities |
+| Infrastructure | Terraform                          |
 
-- Postgres: Airflow's Metadata Database
-- Scheduler: The Airflow component responsible for monitoring and triggering tasks
-- DAG Processor: The Airflow component responsible for parsing DAGs
-- API Server: The Airflow component responsible for serving the Airflow UI and API
-- Triggerer: The Airflow component responsible for triggering deferred tasks
+## Project Structure
 
-When all five containers are ready the command will open the browser to the Airflow UI at http://localhost:8080/. You should also be able to access your Postgres Database at 'localhost:5432/postgres' with username 'postgres' and password 'postgres'.
+```text
+.
+├── dags/
+│   └── weather_dag.py
+├── include/
+│   ├── tasks.py
+│   ├── config.py
+│   ├── db_engine.py
+│   ├── extract.py
+│   ├── db_load.py
+│   ├── transform.py
+│   ├── recommend.py
+│   ├── notify.py
+│   └── templates/
+│       └── weather_report.html
+├── terraform/
+│   ├── main.tf
+│   ├── s3_bucket.tf
+│   ├── provider.tf
+│   ├── variables.tf
+│   ├── outputs.tf
+│   ├── backend.tf
+│   └── .terraform.lock.hcl
+├── requirements.txt
+├── .gitignore
+└── README.md
+```
 
-Note: If you already have either of the above ports allocated, you can either [stop your existing Docker containers or change the port](https://www.astronomer.io/docs/astro/cli/troubleshoot-locally#ports-are-not-available-for-my-local-airflow-webserver).
+## Pipeline Stages
 
-Deploy Your Project to Astronomer
-=================================
+1. **Extract**
+   Retrieves hourly temperature, apparent temperature, wind speed, precipitation, and weather-code data for Berlin.
 
-If you have an Astronomer account, pushing code to a Deployment on Astronomer is simple. For deploying instructions, refer to Astronomer documentation: https://www.astronomer.io/docs/astro/deploy-code/
+2. **Load raw data**
+   Writes the API response to:
 
-Contact
-=======
+   ```text
+   s3://<bucket-name>/raw/<YYYY-MM-DD>.csv
+   ```
 
-The Astronomer CLI is maintained with love by the Astronomer team. To report a bug or suggest a change, reach out to our support.
+   The file is then loaded into the PostgreSQL `weather_table`.
+
+3. **Load weather codes**
+   Loads a reference table that maps Open-Meteo weather codes to readable descriptions.
+
+4. **Transform**
+   Joins the weather data with the code lookup, creates clothing and umbrella recommendations, and writes the result to `weather_table_silver`.
+
+5. **Recommend**
+   Summarises weather between 07:00 and 18:00, including:
+
+   * Lowest apparent temperature
+   * Highest apparent temperature
+   * Clothing recommendation
+   * Umbrella recommendation
+
+   The result is stored in `weather_table_summary`.
+
+6. **Notify**
+   Renders `include/templates/weather_report.html` and emails the daily recommendation.
+
+## Prerequisites
+
+* Python 3.9+
+* Apache Airflow or Astro CLI
+* AWS account and configured credentials
+* Terraform 1.x
+* Existing S3 bucket for Terraform remote state
+* Configured Airflow email backend
+
+## Python Dependencies
+
+```text
+boto3
+pandas
+sqlalchemy
+psycopg2-binary
+python-dotenv
+jinja2
+apache-airflow
+requests
+```
+
+Install them with:
+
+```bash
+pip install -r requirements.txt
+```
+
+## Setup
+
+### 1. Provision the infrastructure
+
+Create `terraform/terraform.tfvars`:
+
+```hcl
+db_username = "your_database_username"
+db_password = "your_database_password"
+my_ip       = "your_public_ip/32"
+```
+
+Run:
+
+```bash
+cd terraform
+terraform init
+terraform fmt
+terraform validate
+terraform plan -var-file="terraform.tfvars"
+terraform apply -var-file="terraform.tfvars"
+```
+
+Terraform creates:
+
+* An S3 bucket with versioning enabled
+* An Amazon RDS PostgreSQL instance
+* A security group allowing PostgreSQL access from `my_ip`
+
+### 2. Configure environment variables
+
+Create a `.env` file:
+
+```env
+DB_USER=<database_username>
+DB_PASSWORD=<database_password>
+DB_HOST=<rds_endpoint>
+DB_PORT=5432
+DB_NAME=weather_db
+BUCKET_NAME=<s3_bucket_name>
+AWS_DEFAULT_REGION=eu-central-1
+NOTIFICATION_RECIPIENT=<recipient_email>
+```
+
+Do not commit `.env` or `terraform.tfvars`.
+
+Recommended `.gitignore` entries:
+
+```gitignore
+.env
+*.tfvars
+*.tfstate
+*.tfstate.*
+.terraform/
+```
+
+### 3. Run with Astro
+
+```bash
+astro dev start
+```
+
+Open Airflow at:
+
+```text
+http://localhost:8080
+```
+
+Enable and trigger the `weather_pipeline` DAG.
+
+## Schedule
+
+The DAG runs daily using:
+
+```python
+schedule="@daily"
+```
+
+For a 05:00 daily run, use:
+
+```python
+schedule="0 5 * * *"
+```
+
+Set the Airflow timezone explicitly if the schedule must follow Berlin local time.
+
+## Known Limitations
+
+* Database tables currently use `if_exists="replace"`, so historical data is overwritten.
+* The RDS instance is publicly accessible for development purposes.
+* The weather-code table is loaded during every DAG run.
+* The pipeline does not yet include automated data-quality checks.
